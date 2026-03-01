@@ -1,5 +1,3 @@
-# raikes-hacks-company-repo
-An Example Company Repo
 # SD Tester Agent
 
 A CAL agent example that demonstrates building a practical testing and evaluation tool with multiple capabilities for test execution, data processing, and result analysis.
