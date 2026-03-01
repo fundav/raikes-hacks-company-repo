@@ -24,7 +24,7 @@ async def minimal_reproducible_example():
 agent = Agent(
     llm=llm,
     system_prompt=SYSTEM_PROMPT,
-    max_calls=10,
+    max_calls=30,
     max_tokens=32768,
     memory=memory,
     agent_name="DebugBot",

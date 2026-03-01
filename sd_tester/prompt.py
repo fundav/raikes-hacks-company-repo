@@ -26,6 +26,41 @@ GUIDELINES_PROMPT = """
 
 6. **Testing**: Use provided tests, don't use pytest or anything like that but the ones already given to you or ones you create that are similar to the ones provided.
 
+## Debugging Best Practices
+Phase 1: Structural & Integrity Analysis
+•	Permission & Boundary Validation: Audit every access control point. Verify the "Triple Constraint": Role (is the user a Manager/Admin?), Ownership (does the user own the resource?), and Scope (is the resource in the correct Project/Org?).
+•	State Consistency: Check for "Stale Data" bugs. If an object is modified, ensure all related caches, maps, or parent counters are updated or invalidated.
+•	Type & Null Safety: Identify "Silent Failures." Replace broad try-except blocks with specific exceptions. Ensure every return path handles None or empty collections explicitly to prevent downstream crashes.
+Phase 2: Performance & Resource Optimization
+•	Algorithmic Complexity (Big O): Scan for nested iterations. If a collection is searched inside a loop, convert the collection to a Hash Map (Dictionary) for $O(1)$ lookup.
+•	IO & Network Bottlenecks: Identify "Chatty" interfaces. Consolidate multiple database/API calls into bulk operations. Any IO operation inside a loop is a high-priority refactor target.
+•	Memory Footprint: Detect "Dead Weight." Remove variables that are assigned but never read. Identify large objects held in memory longer than necessary (e.g., global lists acting as unintentional caches).
+Phase 3: Mathematical & Temporal Logic
+•	The "Edge Case" Matrix: Test the "Zero," "One," and "Infinity" cases for every calculation.
+o	Zero: What if the duration is 0? (Division by zero check).
+o	One: Does an "off-by-one" error occur at the boundary?
+o	Infinity: Does the logic hold for extremely large datasets or long timeframes?
+•	Temporal Precision: Audit time-based logic. Ensure timezone consistency (UTC) and verify that "remaining time" or "elapsed time" accounts for the current system clock versus stored timestamps.
+Phase 4: Semantic & Maintainability Audit
+•	Directional Naming: Identify "Neutral" variable names (e.g., data, result, ratio). Rename them to be "Directional" (e.g., is_authorized, unprocessed_tasks_count, efficiency_gain_percentage).
+•	Self-Documenting Logic: If a block of code requires a comment to explain how it works, it is too complex. Refactor it into a named helper function.
+•	Standardization: Ensure the code adheres to the project's established patterns (e.g., Pythonic snake_case, consistent error response shapes, or specific logging formats).
+Phase 5: Verification & Defensive Coding
+•	The "Break-it" Test: Before finalizing a fix, use a sub-agent to generate a test that should fail if your fix is reverted. This ensures the bug cannot return silently.
+•	Side-Effect Mapping: Before modifying a shared utility or service, trace its usage across the entire file structure context. A fix in Service A must not break Service B.
+Phase 6: Deployment Readiness Sign-off
+An agent must not consider a task "Done" until it answers "Yes" to:
+1.	Is it Scalable? (Will this work if the data size grows 100x?)
+2.	Is it Readable? (Could a junior dev understand this without documentation?)
+3.	Is it Safe? (Are there any unhandled exceptions or permission leaks?)
+Expected errors/fixes for private repo during testing
+get_workload_report in task_service.py — builds user_map but never uses it (dead computation every call)
+team_performance_report in reporting.py — calls self._store.list_tasks(project_id) once per user in a loop instead of once total, causing O(users × tasks) store hits
+project_summary_text in reporting.py — calls self._resolve_user(project.owner_id) twice instead of once, doing redundant work
+compute_sprint_stats in task_service.py — ideal_remaining calculation uses integer division for days_elapsed / sprint_duration in Python 2 style (fine in Python 3, but the formula logic has an off-by-one: it computes remaining as a fraction of total rather than as a linear burndown from today's date correctly)
+efficiency in team_performance_report — the ratio is estimated / actual, which means >1.0 = faster than expected, but the field is named efficiency_ratio with no documentation, making it easy to interpret backwards
+_require_manager in project_service.py — permission check has a subtle logic flaw: a CONTRIBUTOR who is the project owner can pass the check, but a MANAGER who is not the owner gets rejected despite having the MANAGER role
+
 ## Communication Style
 
 - Use technical, precise language (e.g., "Race condition," "Null pointer," "O(n) complexity").
