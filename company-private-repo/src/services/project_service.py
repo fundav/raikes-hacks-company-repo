@@ -166,16 +166,27 @@ class ProjectService:
         return members
 
     def _require_manager(self, project: Project, actor_id: str) -> None:
+        """
+        Check if the actor has manager privileges for the project.
+        ADMIN and MANAGER roles have global access.
+        Project owner has access even if they have a CONTRIBUTOR role.
+        """
         actor = self._store.get_user(actor_id)
-        if actor.role == UserRole.ADMIN:
+        
+        # Admin and Manager roles are globally authorized
+        if actor.role in (UserRole.ADMIN, UserRole.MANAGER):
             return
-        if actor_id not in project.member_ids and actor_id != project.owner_id:
+            
+        # Project owner is authorized regardless of role
+        if actor_id == project.owner_id:
+            return
+
+        # Check membership for non-managers
+        if actor_id not in project.member_ids:
             raise PermissionError("You are not a member of this project")
-        if (
-            actor.role not in (UserRole.MANAGER, UserRole.ADMIN)
-            and actor_id != project.owner_id
-        ):
-            raise PermissionError("Manager or owner privileges required")
+            
+        # They are a member but not a manager/owner
+        raise PermissionError("Manager or owner privileges required")
 
 
 class TagService:

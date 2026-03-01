@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from models.core import Project, Sprint, Tag, Task, User
+from models.core import Project, Sprint, Tag, Task, User, _now
 
 
 class StorageError(Exception):
@@ -29,6 +29,11 @@ class DataStore:
         self._tasks: dict[str, Task] = {}
         self._tags: dict[str, Tag] = {}
         self._sprints: dict[str, Sprint] = {}
+        
+        # Indexes for performance
+        self._project_tasks_map: dict[str, set[str]] = {}
+        self._project_sprints_map: dict[str, set[str]] = {}
+        
         self._persist_path = persist_path
 
         if persist_path and os.path.exists(persist_path):
@@ -90,6 +95,8 @@ class DataStore:
             if project.id in self._projects:
                 raise StorageError(f"Project {project.id} already exists")
             self._projects[project.id] = project
+            self._project_tasks_map.setdefault(project.id, set())
+            self._project_sprints_map.setdefault(project.id, set())
             return project
 
     def get_project(self, project_id: str) -> Project:
@@ -121,7 +128,7 @@ class DataStore:
         with self._lock:
             if project.id not in self._projects:
                 raise NotFoundError(f"Project {project.id} not found")
-            project.updated_at = datetime.utcnow()
+            project.updated_at = _now()
             self._projects[project.id] = project
             return project
 
@@ -130,6 +137,8 @@ class DataStore:
             if project_id not in self._projects:
                 raise NotFoundError(f"Project {project_id} not found")
             del self._projects[project_id]
+            self._project_tasks_map.pop(project_id, None)
+            self._project_sprints_map.pop(project_id, None)
 
     # ------------------------------------------------------------------
     # Tasks
@@ -140,6 +149,7 @@ class DataStore:
             if task.id in self._tasks:
                 raise StorageError(f"Task {task.id} already exists")
             self._tasks[task.id] = task
+            self._project_tasks_map.setdefault(task.project_id, set()).add(task.id)
             return task
 
     def get_task(self, task_id: str) -> Task:
@@ -150,10 +160,10 @@ class DataStore:
 
     def list_tasks(self, project_id: str | None = None) -> list[Task]:
         with self._lock:
-            tasks = list(self._tasks.values())
-        if project_id is not None:
-            tasks = [t for t in tasks if t.project_id == project_id]
-        return tasks
+            if project_id is not None:
+                task_ids = self._project_tasks_map.get(project_id, set())
+                return [self._tasks[tid] for tid in task_ids if tid in self._tasks]
+            return list(self._tasks.values())
 
     def list_tasks_for_user(self, user_id: str) -> list[Task]:
         with self._lock:
@@ -167,7 +177,14 @@ class DataStore:
         with self._lock:
             if task.id not in self._tasks:
                 raise NotFoundError(f"Task {task.id} not found")
-            task.updated_at = datetime.utcnow()
+            task.updated_at = _now()
+            # Handle project move if project_id changed (though UI might not support it yet)
+            old_task = self._tasks[task.id]
+            if old_task.project_id != task.project_id:
+                if old_task.project_id in self._project_tasks_map:
+                    self._project_tasks_map[old_task.project_id].discard(task.id)
+                self._project_tasks_map.setdefault(task.project_id, set()).add(task.id)
+                
             self._tasks[task.id] = task
             return task
 
@@ -175,6 +192,9 @@ class DataStore:
         with self._lock:
             if task_id not in self._tasks:
                 raise NotFoundError(f"Task {task_id} not found")
+            task = self._tasks[task_id]
+            if task.project_id in self._project_tasks_map:
+                self._project_tasks_map[task.project_id].discard(task_id)
             del self._tasks[task_id]
 
     # ------------------------------------------------------------------
@@ -210,6 +230,7 @@ class DataStore:
     def add_sprint(self, sprint: Sprint) -> Sprint:
         with self._lock:
             self._sprints[sprint.id] = sprint
+            self._project_sprints_map.setdefault(sprint.project_id, set()).add(sprint.id)
             return sprint
 
     def get_sprint(self, sprint_id: str) -> Sprint:
@@ -220,10 +241,10 @@ class DataStore:
 
     def list_sprints(self, project_id: str | None = None) -> list[Sprint]:
         with self._lock:
-            sprints = list(self._sprints.values())
-        if project_id is not None:
-            sprints = [s for s in sprints if s.project_id == project_id]
-        return sprints
+            if project_id is not None:
+                sprint_ids = self._project_sprints_map.get(project_id, set())
+                return [self._sprints[sid] for sid in sprint_ids if sid in self._sprints]
+            return list(self._sprints.values())
 
     def update_sprint(self, sprint: Sprint) -> Sprint:
         with self._lock:
@@ -247,7 +268,7 @@ class DataStore:
                 "tasks": {tid: t.to_dict() for tid, t in self._tasks.items()},
                 "tags": {gid: g.to_dict() for gid, g in self._tags.items()},
                 "sprints": {sid: s.to_dict() for sid, s in self._sprints.items()},
-                "saved_at": datetime.utcnow().isoformat(),
+                "saved_at": _now().isoformat(),
             }
         with open(target, "w") as f:
             json.dump(data, f, indent=2)
@@ -256,34 +277,17 @@ class DataStore:
         with open(path) as f:
             data: dict[str, Any] = json.load(f)
         with self._lock:
+            self.clear()
             for uid, udata in data.get("users", {}).items():
-                self._users[uid] = User.from_dict(udata)
+                self.add_user(User.from_dict(udata))
             for pid, pdata in data.get("projects", {}).items():
-                self._projects[pid] = Project.from_dict(pdata)
+                self.add_project(Project.from_dict(pdata))
             for tid, tdata in data.get("tasks", {}).items():
-                self._tasks[tid] = Task.from_dict(tdata)
+                self.add_task(Task.from_dict(tdata))
             for gid, gdata in data.get("tags", {}).items():
-                self._tags[gid] = Tag(
-                    name=str(gdata["name"]),
-                    color=str(gdata.get("color", "#6366f1")),
-                    id=str(gdata["id"]),
-                )
+                self.add_tag(Tag.from_dict(gdata))
             for sid, sdata in data.get("sprints", {}).items():
-                sprint = Sprint(
-                    name=str(sdata["name"]),
-                    project_id=str(sdata["project_id"]),
-                    start_date=datetime.fromisoformat(str(sdata["start_date"])),
-                    end_date=datetime.fromisoformat(str(sdata["end_date"])),
-                    goal=str(sdata.get("goal", "")),
-                )
-                sprint.id = str(sdata["id"])
-                sprint.is_active = bool(sdata.get("is_active", False))
-                sprint.velocity = (
-                    float(sdata["velocity"])
-                    if sdata.get("velocity") is not None
-                    else None
-                )
-                self._sprints[sid] = sprint
+                self.add_sprint(Sprint.from_dict(sdata))
 
     def clear(self) -> None:
         with self._lock:
@@ -292,3 +296,5 @@ class DataStore:
             self._tasks.clear()
             self._tags.clear()
             self._sprints.clear()
+            self._project_tasks_map.clear()
+            self._project_sprints_map.clear()

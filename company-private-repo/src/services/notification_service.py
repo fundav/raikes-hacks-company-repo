@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable
 
+from models.core import _now
 from models.store import DataStore
 
 
@@ -31,10 +32,6 @@ class EventType(Enum):
 
 def _new_id() -> str:
     return str(uuid.uuid4())
-
-
-def _now() -> datetime:
-    return datetime.utcnow()
 
 
 @dataclass
@@ -79,15 +76,21 @@ EventCallback = Callable[[Event], None]
 
 
 class NotificationService:
-    def __init__(self) -> None:
+    def __init__(self, max_event_log: int = 1000, max_inbox_size: int = 200) -> None:
         self._lock = threading.RLock()
         self._event_log: list[Event] = []
         self._inbox: dict[str, list[Notification]] = {}
         self._subscribers: dict[EventType, list[EventCallback]] = {}
+        self._max_event_log = max_event_log
+        self._max_inbox_size = max_inbox_size
 
     def publish(self, event: Event) -> None:
         with self._lock:
             self._event_log.append(event)
+            # Cap event log size
+            if len(self._event_log) > self._max_event_log:
+                self._event_log = self._event_log[-self._max_event_log:]
+                
             callbacks = list(self._subscribers.get(event.event_type, []))
         for cb in callbacks:
             try:
@@ -112,7 +115,13 @@ class NotificationService:
     ) -> Notification:
         notif = Notification(recipient_id=recipient_id, event=event, message=message)
         with self._lock:
-            self._inbox.setdefault(recipient_id, []).append(notif)
+            inbox = self._inbox.setdefault(recipient_id, [])
+            inbox.append(notif)
+            # Cap inbox size
+            if len(inbox) > self._max_inbox_size:
+                # Prioritize keeping unread notifications? 
+                # For simplicity, just keep the latest ones.
+                self._inbox[recipient_id] = inbox[-self._max_inbox_size:]
         return notif
 
     def get_notifications(

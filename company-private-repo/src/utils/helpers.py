@@ -8,6 +8,8 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from models.core import _now
+
 
 def slugify(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
@@ -41,20 +43,20 @@ def mask_email(email: str) -> str:
 def is_overdue(due_date: datetime | None) -> bool:
     if due_date is None:
         return False
-    return due_date < datetime.utcnow()
+    return due_date < _now()
 
 
 def days_until(dt: datetime | None) -> int | None:
     if dt is None:
         return None
-    delta = dt.date() - datetime.utcnow().date()
+    delta = dt.date() - _now().date()
     return delta.days
 
 
 def business_days_until(dt: datetime | None) -> int | None:
     if dt is None:
         return None
-    start: date = datetime.utcnow().date()
+    start: date = _now().date()
     end: date = dt.date()
     if end <= start:
         return 0
@@ -68,8 +70,10 @@ def business_days_until(dt: datetime | None) -> int | None:
 
 
 def format_relative(dt: datetime) -> str:
-    now = datetime.utcnow()
+    now = _now()
     seconds = int((now - dt).total_seconds())
+    if seconds < 0: # Future
+        return "in the future"
     if seconds < 60:
         return "just now"
     if seconds < 3600:

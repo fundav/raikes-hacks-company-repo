@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -37,7 +37,9 @@ def _new_id() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    # Use timezone-aware UTC datetime for accuracy, then convert to naive 
+    # to maintain compatibility with existing naive comparisons if any.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +100,14 @@ class Tag:
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "color": self.color}
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Tag:
+        return cls(
+            name=str(data["name"]),
+            color=str(data.get("color", "#6366f1")),
+            id=str(data.get("id", _new_id())),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Comment
@@ -122,6 +132,20 @@ class Comment:
             "edited_at": self.edited_at.isoformat() if self.edited_at else None,
             "mentions": self.mentions,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Comment:
+        comment = cls(
+            author_id=str(data["author_id"]),
+            content=str(data["content"]),
+            id=str(data.get("id", _new_id())),
+            mentions=list(data.get("mentions", [])),
+        )
+        if "created_at" in data:
+            comment.created_at = datetime.fromisoformat(str(data["created_at"]))
+        if data.get("edited_at"):
+            comment.edited_at = datetime.fromisoformat(str(data["edited_at"]))
+        return comment
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +173,20 @@ class Attachment:
             "uploaded_at": self.uploaded_at.isoformat(),
             "mime_type": self.mime_type,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Attachment:
+        attachment = cls(
+            filename=str(data["filename"]),
+            file_path=str(data["file_path"]),
+            uploaded_by=str(data["uploaded_by"]),
+            file_size=int(data["file_size"]),
+            id=str(data.get("id", _new_id())),
+            mime_type=str(data.get("mime_type", "application/octet-stream")),
+        )
+        if "uploaded_at" in data:
+            attachment.uploaded_at = datetime.fromisoformat(str(data["uploaded_at"]))
+        return attachment
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +274,13 @@ class Task:
             int(data["story_points"]) if data.get("story_points") is not None else None
         )
         task.sprint_id = str(data["sprint_id"]) if data.get("sprint_id") else None
+        
+        # New: load comments and attachments
+        if "comments" in data:
+            task.comments = [Comment.from_dict(c) for c in data["comments"]]
+        if "attachments" in data:
+            task.attachments = [Attachment.from_dict(a) for a in data["attachments"]]
+            
         if data.get("due_date"):
             task.due_date = datetime.fromisoformat(str(data["due_date"]))
         if data.get("created_at"):
@@ -274,6 +319,24 @@ class Sprint:
             "is_active": self.is_active,
             "velocity": self.velocity,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Sprint:
+        sprint = cls(
+            name=str(data["name"]),
+            project_id=str(data["project_id"]),
+            start_date=datetime.fromisoformat(str(data["start_date"])),
+            end_date=datetime.fromisoformat(str(data["end_date"])),
+            goal=str(data.get("goal", "")),
+        )
+        sprint.id = str(data.get("id", sprint.id))
+        if "created_at" in data:
+            sprint.created_at = datetime.fromisoformat(str(data["created_at"]))
+        sprint.is_active = bool(data.get("is_active", False))
+        sprint.velocity = (
+            float(data["velocity"]) if data.get("velocity") is not None else None
+        )
+        return sprint
 
 
 # ---------------------------------------------------------------------------

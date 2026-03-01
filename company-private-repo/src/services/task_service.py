@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from models.core import Comment, Priority, Sprint, Status, Task
+from models.core import Comment, Priority, Sprint, Status, Task, _now
 from models.store import DataStore, NotFoundError, StorageError
 
 
@@ -146,7 +146,7 @@ class TaskService:
         for comment in task.comments:
             if comment.id == comment_id:
                 comment.content = new_content
-                comment.edited_at = datetime.utcnow()
+                comment.edited_at = _now()
                 self._store.update_task(task)
                 return comment
         raise NotFoundError(f"Comment {comment_id} not found on task {task_id}")
@@ -177,7 +177,7 @@ class TaskService:
         overdue_only: bool = False,
     ) -> list[Task]:
         tasks = self._store.list_tasks(project_id=project_id)
-        now = datetime.utcnow()
+        now = _now()
         results: list[Task] = []
 
         for task in tasks:
@@ -237,7 +237,7 @@ class TaskService:
 
     def compute_project_stats(self, project_id: str) -> dict[str, Any]:
         tasks = self._store.list_tasks(project_id=project_id)
-        now = datetime.utcnow()
+        now = _now()
 
         total = len(tasks)
         status_counts: dict[str, int] = {}
@@ -312,15 +312,16 @@ class TaskService:
         total_tasks = len(tasks)
         completed_tasks = sum(1 for t in tasks if t.status == Status.DONE)
 
-        sprint_duration = (sprint.end_date - sprint.start_date).days
-        days_elapsed = (datetime.utcnow() - sprint.start_date).days
-        days_elapsed = max(0, min(days_elapsed, sprint_duration))
+        # Use total_seconds to avoid integer division issues and get more precision
+        duration_seconds = (sprint.end_date - sprint.start_date).total_seconds()
+        elapsed_seconds = (_now() - sprint.start_date).total_seconds()
+        elapsed_seconds = max(0.0, min(elapsed_seconds, duration_seconds))
 
-        ideal_remaining = (
-            total_points * (1 - days_elapsed / sprint_duration)
-            if sprint_duration > 0
-            else float(total_points)
-        )
+        # Ideal remaining points based on a linear burndown
+        if duration_seconds > 0:
+            ideal_remaining = total_points * (1.0 - (elapsed_seconds / duration_seconds))
+        else:
+            ideal_remaining = 0.0 if _now() >= sprint.end_date else float(total_points)
 
         return {
             "sprint_id": sprint_id,
@@ -330,39 +331,40 @@ class TaskService:
             "remaining_story_points": remaining_points,
             "total_tasks": total_tasks,
             "completed_tasks": completed_tasks,
-            "days_elapsed": days_elapsed,
-            "days_remaining": sprint_duration - days_elapsed,
+            "days_elapsed": int(elapsed_seconds // 86400),
+            "days_remaining": int((duration_seconds - elapsed_seconds) // 86400),
             "ideal_remaining_points": round(ideal_remaining, 1),
-            "is_on_track": remaining_points <= ideal_remaining,
+            "is_on_track": remaining_points <= (ideal_remaining + 0.01),
         }
 
     def get_workload_report(self, project_id: str) -> list[dict[str, Any]]:
         tasks = self._store.list_tasks(project_id=project_id)
         users = self._store.list_users(active_only=True)
 
-        # Build a map for fast user lookup
-        user_map = {u.id: u for u in users}
-        report: list[dict[str, Any]] = []
-
+        # Aggregate data by assignee for O(U + T) performance
+        user_workload: dict[str, dict[str, Any]] = {}
         for user in users:
-            user_tasks = [t for t in tasks if user.id in t.assignee_ids]
-            open_tasks = [
-                t for t in user_tasks if t.status not in (Status.DONE, Status.CANCELLED)
-            ]
-            report.append(
-                {
-                    "user_id": user.id,
-                    "username": user.username,
-                    "full_name": user.full_name,
-                    "total_assigned": len(user_tasks),
-                    "open_tasks": len(open_tasks),
-                    "story_points": sum(t.story_points or 0 for t in open_tasks),
-                    "estimated_hours": sum(
-                        t.estimated_hours or 0.0 for t in open_tasks
-                    ),
-                }
-            )
+            user_workload[user.id] = {
+                "user_id": user.id,
+                "username": user.username,
+                "full_name": user.full_name,
+                "total_assigned": 0,
+                "open_tasks": 0,
+                "story_points": 0,
+                "estimated_hours": 0.0,
+            }
 
+        for task in tasks:
+            for assignee_id in task.assignee_ids:
+                if assignee_id in user_workload:
+                    stats = user_workload[assignee_id]
+                    stats["total_assigned"] += 1
+                    if task.status not in (Status.DONE, Status.CANCELLED):
+                        stats["open_tasks"] += 1
+                        stats["story_points"] += (task.story_points or 0)
+                        stats["estimated_hours"] += (task.estimated_hours or 0.0)
+
+        report = list(user_workload.values())
         report.sort(key=lambda x: int(x["open_tasks"]), reverse=True)
         return report
 
@@ -370,7 +372,7 @@ class TaskService:
         self, project_id: str, last_n_sprints: int = 5
     ) -> list[dict[str, Any]]:
         sprints = self._store.list_sprints(project_id=project_id)
-        now = datetime.utcnow()
+        now = _now()
         completed = sorted(
             [s for s in sprints if s.end_date < now],
             key=lambda s: s.end_date,
@@ -395,7 +397,7 @@ class TaskService:
     def find_blocked_tasks(self, project_id: str) -> list[Task]:
         tasks = self._store.list_tasks(project_id=project_id)
         blocked: list[Task] = []
-        now = datetime.utcnow()
+        now = _now()
         threshold = timedelta(days=14)
 
         for task in tasks:

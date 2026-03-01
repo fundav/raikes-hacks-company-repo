@@ -7,7 +7,7 @@ import io
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from models.core import Sprint, Status, User
+from models.core import Sprint, Status, User, _now
 from models.store import DataStore
 
 
@@ -122,8 +122,9 @@ class ReportGenerator:
     def project_summary_text(self, project_id: str) -> str:
         project = self._store.get_project(project_id)
         tasks = self._store.list_tasks(project_id=project_id)
-        now = datetime.utcnow()
+        now = _now()
 
+        # Optimization: resolved user once
         owner = self._resolve_user(project.owner_id)
         owner_name = owner.full_name if owner is not None else "(unknown)"
 
@@ -177,7 +178,7 @@ class ReportGenerator:
     def sprint_report_text(self, sprint_id: str) -> str:
         sprint: Sprint = self._store.get_sprint(sprint_id)
         tasks = self._store.list_tasks_in_sprint(sprint_id)
-        now = datetime.utcnow()
+        now = _now()
 
         completed = [t for t in tasks if t.status == Status.DONE]
         in_progress = [t for t in tasks if t.status == Status.IN_PROGRESS]
@@ -250,25 +251,41 @@ class ReportGenerator:
         return data_points
 
     def team_performance_report(self, project_id: str) -> dict[str, Any]:
+        """
+        Generates a performance report for all active project members.
+        
+        Efficiency Ratio is calculated as (Total Estimated Hours / Total Actual Hours)
+        for completed tasks. A ratio > 1.0 means tasks were completed faster than estimated.
+        """
         tasks = self._store.list_tasks(project_id=project_id)
         users = self._store.list_users(active_only=True)
-        now = datetime.utcnow()
+        now = _now()
+        
+        # Pre-map tasks to users to achieve O(U + T) complexity
+        user_tasks_map: dict[str, list[Any]] = {u.id: [] for u in users}
+        for t in tasks:
+            for uid in t.assignee_ids:
+                if uid in user_tasks_map:
+                    user_tasks_map[uid].append(t)
 
         members: list[dict[str, Any]] = []
         for user in users:
-            user_tasks = [t for t in tasks if user.id in t.assignee_ids]
-            if not user_tasks:
+            assigned_tasks = user_tasks_map[user.id]
+            if not assigned_tasks:
                 continue
-            done_tasks = [t for t in user_tasks if t.status == Status.DONE]
+                
+            done_tasks = [t for t in assigned_tasks if t.status == Status.DONE]
             overdue_tasks = [
                 t
-                for t in user_tasks
+                for t in assigned_tasks
                 if t.due_date is not None
                 and t.due_date < now
                 and t.status not in (Status.DONE, Status.CANCELLED)
             ]
             total_est = sum(t.estimated_hours or 0.0 for t in done_tasks)
             total_actual = sum(t.actual_hours for t in done_tasks)
+            
+            # Efficiency > 1.0 means faster than estimated
             efficiency: float | None = (
                 (total_est / total_actual) if total_actual > 0 else None
             )
@@ -278,11 +295,11 @@ class ReportGenerator:
                     "user_id": user.id,
                     "username": user.username,
                     "full_name": user.full_name,
-                    "tasks_assigned": len(user_tasks),
+                    "tasks_assigned": len(assigned_tasks),
                     "tasks_completed": len(done_tasks),
                     "tasks_overdue": len(overdue_tasks),
                     "completion_rate": round(
-                        len(done_tasks) / len(user_tasks) * 100, 1
+                        len(done_tasks) / len(assigned_tasks) * 100, 1
                     ),
                     "total_estimated_hours": round(total_est, 2),
                     "total_actual_hours": round(total_actual, 2),
